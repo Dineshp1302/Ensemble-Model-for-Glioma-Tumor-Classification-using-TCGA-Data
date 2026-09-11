@@ -1,0 +1,1178 @@
+---
+title: "Ensemble Model for Glioma Tumor Classification using TCGA Data"
+subtitle: "DA5030"
+author: "Pradhan, Dinesh"
+date: "Spring 2026"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Introduction
+
+This project builds an ensemble classification model to predict Glioma tumor grade 
+(GBM vs LGG) using genomic and clinical data from the Cancer Genome Atlas (TCGA) 
+program. The goal is to classify tumors as either Glioblastoma Multiforme (GBM) or 
+Lower Grade Glioma (LGG) based on gene mutation profiles, demographic features, and 
+clinical variables.
+
+### Data Source
+The dataset is sourced from the UCI Machine Learning Repository — 
+[TCGA-LGG and TCGA-GBM dataset](https://archive.ics.uci.edu/dataset/759/glioma+grading+clinical+and+mutation+features+from+tcga). 
+It contains 862 observations and 27 variables including 20 gene mutation features 
+(IDH1, TP53, ATRX, etc.), clinical features (Age, Gender, Race), and the target 
+variable `Grade` (GBM or LGG).
+
+### Approach of the project
+The modeling approach follows the CRISP-DM framework — data understanding, 
+preparation, modeling, and evaluation. Three base models are trained (Logistic 
+Regression, Random Forest, C5.0) each with hyperparameter tuning and bagging, 
+and combined into a heterogeneous ensemble for final prediction.
+
+
+
+## Load Library
+```{r LoadLibrary, message=FALSE, warning=FALSE, echo=FALSE}
+library(ggplot2)
+library(VIM)
+library(car)
+library(caret)
+library(randomForest)
+library(C50)
+```
+I use the library function from the R was used to load the library. THis is important as it will help us to use the function in the library. The ggplot2 was used for the visualization, the vIM was used for the KNN model, the car was used for the VIF to check the multicolonearity, the caret library was used to stratified splitting of the data, the randomfroest library was used for the random forest model, the C50 library was used for the  C50 model. 
+
+## Load the data
+```{r LoadTheData, message=FALSE, warning=FALSE, echo=FALSE}
+df <- read.csv("https://drive.google.com/uc?export=download&id=1QMtKhI6cWBO0as4amoRrlsQeGZXHlKc0", header = TRUE, stringsAsFactors = FALSE)
+
+head(df, 5)
+str(df)
+dim(df)
+```
+
+Here the data was load using the read.csv function in the R and the dataset was analyzed using the head(), str(), and dim() function. The primary analysis of the data set shows that the data set has `r dim(df)` dimenssions. This step is necessary as it will allow us to understand and use the data in further steps of the project.
+
+## Exploring the data
+
+### Checking the target column
+```{r TargetFeature, message=FALSE, warning=FALSE, echo=TRUE}
+
+# Checking the distribution of the target varible
+table(df$Grade)
+prop.table(table(df$Grade))
+```
+
+I examined the distribution of the target variable `Grade` using frequency counts and proportions to understand the class balance in the dataset by applying `table(df$Grade)` and `prop.table(table(df$Grade))`. This step is important because knowing whether the dataset is balanced or imbalanced directly affects model performance and the choice of evaluation metrics. The results show that there are `r table(df$Grade)["GBM"]` GBM observations and `r table(df$Grade)["LGG"]` LGG observations, with proportions of `r round(prop.table(table(df$Grade))["GBM"], 3)` for GBM and `r round(prop.table(table(df$Grade))["LGG"], 3)` for LGG, indicating a moderate class imbalance where LGG is the majority class. This is necessary to identify potential bias toward the majority class and to justify the use of metrics like F1-score and techniques such as class weighting or threshold tuning in later stages of the modeling process.
+
+### Checking the numeric or categorical features
+```{r FeaturesChecking, message=FALSE, warning=FALSE, echo=FALSE}
+
+# Checking the numeric category
+num_val <- sapply(df, is.numeric)
+
+# checking the categorical features
+cat_val <- sapply(df, function(x) is.character(x) | is.factor(x))
+
+names(df)[num_val]
+names(df)[cat_val]
+
+```
+
+I identified numeric and categorical variables in the dataset using `sapply()` by checking data types across all columns. This step was performed to correctly understand the structure of the dataset and prepare it for modeling, as different algorithms handle numeric and categorical features differently. The results show that no variables are purely numeric (`r length(names(df)[num_val])`), while all features including `r paste(head(names(df)[cat_val], 3), collapse = ", ")` and others are treated as categorical. This is necessary because it informs preprocessing decisions such as encoding for models like logistic regression, while models like Random Forest can handle categorical variables directly.
+
+### Converting the age to numeric
+```{r AgeToNumeric, message=FALSE, warning=FALSE, echo=FALSE}
+
+# Converting the age to number
+df$Age_years <- as.numeric(sub(" years.*", "", df$Age_at_diagnosis))
+
+# Removing the original column
+df$Age_at_diagnosis <- NULL
+
+```
+
+I converted the `Age_at_diagnosis` column into a numeric variable by extracting the numeric age using `sub()` and storing it in a new variable `Age_years`, followed by removing the original column. This was done because the age information was stored as text and needed to be converted into a numeric format for proper use in modeling algorithms. The transformation successfully created a usable numeric feature (`r summary(df$Age_years)[1]` to `r summary(df$Age_years)[6]`), replacing the non-numeric representation. This step is necessary because machine learning models require numeric inputs for meaningful computation and to ensure accurate model performance.
+
+### Missing value checking
+```{r MissingVal, message=FALSE, warning=FALSE, echo=FALSE}
+
+# Missing values
+missing_val <- sum(is.na(df))
+
+# Column name where the missing value is present
+missing_col <- colSums(is.na(df))
+
+missing_val
+missing_col
+```
+
+I checked for missing values in the dataset using `sum(is.na(df))` to get the total count and `colSums(is.na(df))` to identify which columns contain missing data. This step was performed to assess data quality before modeling, as missing values can negatively impact model performance. The results show that there are `r missing_val` total missing values in the dataset, all of which are present in the `Age_years` column (`r missing_col["Age_years"]` missing values), while all other variables have no missing data. This is necessary because identifying missing values helps decide appropriate handling strategies such as imputation or removal to ensure the model is trained on complete and reliable data.
+
+### Target distribution (Class imbalance)
+```{r ClassImblance distribution, message=FALSE, warning=FALSE, echo=FALSE}
+
+ggplot(df, aes(x = Grade)) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Distribution of Tumor Grade",
+       x = "Tumor Type",
+       y = "Count") +
+  theme_minimal()
+
+```
+
+I visualized the distribution of the target variable `Grade` using a bar plot created with `ggplot2` to better understand the class balance in the dataset. This was done because visual representation provides a clearer and more intuitive understanding of how the classes are distributed compared to numerical summaries alone. The plot shows that the LGG class has a higher count than the GBM class, confirming a moderate class imbalance in the dataset. I chose to keep the class imbalance as it is and did not apply techniques like oversampling or undersampling because the imbalance is not severe and models like Random Forest are relatively robust to such imbalance. Additionally, altering the class distribution could distort the original data characteristics. This is necessary because acknowledging and consciously handling (or not handling) class imbalance ensures transparency in modeling decisions and supports the use of appropriate evaluation metrics like F1-score.
+
+### Clinical features column distribution
+```{r FeatureColumn, message=FALSE, warning=FALSE, echo=FALSE}
+
+# Checking the distribution of gender
+ggplot(df, aes(x = Gender)) +
+  geom_bar(fill = "navy") +
+  labs(title = "Distribution of Gender",
+       x = "Gender",
+       y = "Count") +
+  theme_minimal()
+
+# Checking the distribution of the Race
+ggplot(df, aes(x = Race)) +
+  geom_bar(fill = "black") +
+  labs(title = "Distribution of Race",
+       x = "Race",
+       y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Checking the distribution of the primary diagnosis
+ggplot(df, aes(x = Primary_Diagnosis)) +
+  geom_bar(fill = "skyblue") +
+  labs(title = "Distribution of Primary Diagnosis",
+       x = "Primary Diagnosis",
+       y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+I visualized the distribution of key clinical categorical features (Gender, Race, and Primary Diagnosis) to understand their data spread and category representation. This was done to identify any imbalance or dominance of certain categories, which could influence model learning. The plots show that `r names(sort(table(df$Gender), decreasing = TRUE))[1]` is the dominant gender, `r names(sort(table(df$Race), decreasing = TRUE))[1]` is the most frequent race, and `r names(sort(table(df$Primary_Diagnosis), decreasing = TRUE))[1]` appears most commonly among diagnoses, indicating uneven distributions across categories. This is necessary to understand feature characteristics, detect potential bias, and guide preprocessing or modeling decisions if required.
+
+### Gene mutation distribution
+```{r GeneMutation, message=FALSE, warning=FALSE, echo=FALSE}
+
+# IDH1 distribution
+ggplot(df, aes(x = IDH1)) +
+  geom_bar(fill = "brown") +
+  labs(title = "Distribution of IDH1 Mutation",
+       x = "IDH1",
+       y = "Count") +
+  theme_minimal()
+
+# TP53 distribution
+ggplot(df, aes(x = TP53)) +
+  geom_bar(fill = "blue") +
+  labs(title = "Distribution of TP53 Mutation",
+       x = "TP53",
+       y = "Count") +
+  theme_minimal()
+
+# ATRX distribution
+ggplot(df, aes(x = ATRX)) +
+  geom_bar(fill = "red") +
+  labs(title = "Distribution of ATRX Mutation",
+       x = "ATRX",
+       y = "Count") +
+  theme_minimal()
+
+# EGFR distribution
+ggplot(df, aes(x = EGFR)) +
+  geom_bar(fill = "orange") +
+  labs(title = "Distribution of EGFR Mutation",
+       x = "EGFR",
+       y = "Count") +
+  theme_minimal()
+
+# PTEN distribution
+ggplot(df, aes(x = PTEN)) +
+  geom_bar(fill = "black") +
+  labs(title = "Distribution of PTEN Mutation",
+       x = "PTEN",
+       y = "Count") +
+  theme_minimal()
+
+```
+
+I analyzed the distribution of key gene mutations (IDH1, TP53, ATRX, EGFR, and PTEN) to understand how frequently mutations occur across the dataset. This was done to identify whether mutation patterns are balanced or skewed, which can influence model learning. The observations show that most genes have a higher number of non-mutated cases compared to mutated ones, indicating an imbalance in mutation presence. I chose not to apply any balancing techniques because these mutation patterns reflect the true biological distribution of the data, and altering them could distort meaningful relationships. Additionally, models like Random Forest can handle such imbalance effectively without requiring explicit adjustments. This is necessary to preserve the original data characteristics while still allowing the model to learn important patterns.
+
+### Checking the Redundant / Useless Features
+```{r UselessFeatures, message=FALSE, warning=FALSE, echo=FALSE}
+
+# Checking the unique column in the dataset
+unique_col <- sapply(df, function(x) length(unique(x)))
+
+# Checking the frequently appear column in the dataset
+const_cols <- names(df)[sapply(df, function(x) length(unique(x)) == 1)]
+
+const_cols
+unique_col
+```
+
+I checked for redundant or useless features by analyzing the number of unique values in each column to identify constant or non-informative variables. This was done to ensure that features contributing no variation are removed before modeling. The results show that there are no constant columns in the dataset (`r length(const_cols)`), indicating that all variables have some level of variability, while features like `Case_ID` have a very high number of unique values (`r unique_col["Case_ID"]`), acting as identifiers rather than useful predictors. This is necessary because removing such non-informative or identifier features helps improve model performance and prevents overfitting.
+
+### Removing the non required column 
+```{r RemovingTheColumn, message=FALSE, warning=FALSE, echo=FALSE}
+
+# getting the column
+remove_cols <- c("Case_ID", "Project", "Primary_Diagnosis")
+
+feature_cols <- setdiff(names(df), remove_cols)
+
+df_clean <- df[, feature_cols]
+
+dim(df_clean)
+```
+
+I removed non-required columns such as identifiers and less relevant features to create a cleaned dataset for modeling. This was done to eliminate variables that do not contribute meaningful predictive information and may introduce noise or data leakage. The cleaned dataset now contains `r dim(df_clean)` observations and `r dim(df_clean)` features, ensuring only relevant variables are retained. This is necessary to improve model efficiency, reduce complexity, and enhance overall prediction performance.
+
+### Converting the character to the factor
+```{r ConversionToFactor, message=FALSE, warning=FALSE, echo=FALSE}
+# Convert all character columns to factor
+df_clean[] <- lapply(df_clean, function(x) {
+  if (is.character(x)) as.factor(x) else x
+})
+
+# Ensure target is factor
+df_clean$Grade <- as.factor(df_clean$Grade)
+```
+
+I converted all character variables in the dataset to factor type and ensured that the target variable `Grade` is also treated as a factor. This was done because categorical variables need to be in factor format for proper handling by machine learning models in R. The transformation ensures that all categorical features are correctly recognized and used during model training. This is necessary to avoid errors during modeling and to ensure that algorithms interpret categorical data appropriately.
+
+### seprating the target column
+```{r targetcolumn, message=FALSE, warning=FALSE, echo=FALSE}
+
+x <- df_clean[, setdiff(names(df_clean), "Grade")]
+y <- df_clean$Grade
+
+dim(x)
+length(y)
+```
+
+I separated the dataset into predictor variables (`x`) and the target variable (`y`) by removing `Grade` from the feature set. This was done to clearly define inputs and outputs for the machine learning model. The resulting feature matrix contains `r dim(x)[1]` observations and `r dim(x)[2]` features, while the target variable has `r length(y)` observations. This is necessary because most modeling techniques require a clear distinction between predictors and the response variable for training and evaluation.
+
+### Imputation of the missing value (Using the KNN model)
+```{r Imputation, message=FALSE, warning=FALSE, echo=TRUE}
+
+# Checking the missing value
+sum(is.na(df_clean))
+
+# Applying the KNN imputation
+df_imputed <- kNN(df_clean, k = 5)
+
+# Removing the extra column
+df_imputed <- df_imputed[, !grepl("_imp", names(df_imputed))]
+
+# Back checking any missing value
+sum(is.na(df_imputed))
+
+```
+
+I handled missing values in the dataset using KNN imputation with `k = 5` to estimate and replace missing entries based on similar observations. This was done to preserve the dataset size and avoid losing information that could occur if rows were removed. Initially, there were `r sum(is.na(df_clean))` missing values, and after imputation, all missing values were successfully removed (`r sum(is.na(df_imputed))`). This is necessary because most machine learning algorithms cannot handle missing data directly, and proper imputation ensures the dataset is complete and suitable for modeling while maintaining underlying data patterns.
+
+### Boxplot for checking the outliers
+```{r Boxplot, message=FALSE, warning=FALSE, echo=FALSE}
+
+boxplot(df_imputed$Age_years,
+        main = "Boxplot of Age",
+        col = "orange")
+
+```
+
+I used a boxplot to examine the distribution of the `Age_years` variable and identify potential outliers. This was done to visually assess the spread and detect any extreme values that may influence the model. The plot shows that most age values lie within a reasonable range with no significant extreme outliers, indicating a fairly well-distributed feature. I chose not to apply any outlier treatment since the values appear realistic and Random Forest models are generally robust to such variations. This is necessary to preserve the natural distribution of the data while ensuring that no important information is lost.
+
+### Checking the outliers
+```{r Outliers, message=FALSE, warning=FALSE, echo=FALSE}
+
+Q1 <- quantile(df_imputed$Age_years, 0.25)
+Q3 <- quantile(df_imputed$Age_years, 0.75)
+IQR_val <- Q3 - Q1
+
+lower <- Q1 - 1.5 * IQR_val
+upper <- Q3 + 1.5 * IQR_val
+
+outliers_df <- df_imputed$Age_years[
+  df_imputed$Age_years < lower | df_imputed$Age_years > upper
+]
+
+length(outliers_df)
+
+```
+
+I further checked for outliers in the `Age_years` variable using the IQR (Interquartile Range) method by calculating the lower and upper bounds. This was done to statistically confirm the presence of outliers beyond visual inspection. The result shows that there are `r length(outliers_df)` outliers in the dataset, indicating that no extreme values exist outside the acceptable range. Since no outliers were detected, no treatment was applied. This is necessary to ensure that the data is clean and does not contain extreme values that could negatively impact model performance.
+
+## Corelation and associate analysis
+
+### chi square test
+```{r chiSq, message=FALSE, warning=FALSE, echo=FALSE}
+
+mutation_cols <- c("IDH1","TP53","ATRX","PTEN","EGFR","CIC","MUC16","PIK3CA",
+                   "NF1","PIK3R1","FUBP1","RB1","NOTCH1","BCOR","CSMD3",
+                   "SMARCA4","GRIN2A","IDH2","FAT4","PDGFRA")
+
+chi_results <- data.frame(
+  Gene    = character(),
+  Chi_Sq  = numeric(),
+  P_Value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (gene in mutation_cols) {
+  ct  <- table(df_imputed[[gene]], df_imputed$Grade)
+  chi <- chisq.test(ct)
+  chi_results <- rbind(chi_results, data.frame(
+    Gene    = gene,
+    Chi_Sq  = round(chi$statistic, 2),
+    P_Value = round(chi$p.value, 6)
+  ))
+}
+
+chi_results <- chi_results[order(chi_results$P_Value), ]
+chi_results
+
+```
+
+I performed a Chi-Square test to evaluate the association between each gene mutation and the target variable `Grade`. This was done to identify which features have a statistically significant relationship with tumor classification. The results show that several genes such as IDH1, ATRX, PTEN, and EGFR have very low p-values, indicating a strong association with the target variable, while some genes like BCOR, PIK3CA, and FAT4 have high p-values, suggesting little to no significant relationship. This is necessary for feature selection, as it helps in identifying important predictors that contribute to the model while potentially removing irrelevant features to improve performance and interpret.
+
+
+### Corelation age and Grade
+```{r Correlation, message=FALSE, warning=FALSE, echo=FALSE}
+age_cor <- cor.test(df_imputed$Age_years,
+                     as.numeric(df_imputed$Grade == "GBM"),
+                     method = "pearson")
+
+age_cor$estimate
+age_cor$p.value
+
+```
+
+I performed a Pearson correlation test between `Age_years` and the target variable `Grade` (converted to numeric) to assess their relationship. This was done to understand whether age has a linear association with tumor classification. The results show a moderate positive correlation of `r round(age_cor$estimate, 3)` with a highly significant p-value (`r format(age_cor$p.value, scientific = TRUE)`), indicating that age is strongly associated with the tumor grade. This is necessary to identify important numerical features that contribute to the model and to support their inclusion in the predictive analysis.
+
+### Mutation correlation matrix
+```{r MutationCo, message=FALSE, warning=FALSE, echo=FALSE}
+
+mut_binary <- as.data.frame(
+  sapply(df_imputed[, mutation_cols],
+         function(x) as.integer(x == "MUTATED"))
+)
+
+cor_mat <- round(cor(mut_binary), 2)
+cor_mat
+
+```
+
+I analyzed the correlation between gene mutations by converting them into binary format and computing a correlation matrix. This was done to identify relationships between different gene mutations and detect any multicollinearity. The results show that most correlations are relatively low, indicating weak relationships between genes, although some moderate positive correlations exist (e.g., between TP53 and ATRX, IDH1 and ATRX) and some negative correlations (e.g., IDH1 with PTEN and EGFR). Overall, there is no strong multicollinearity among features. This is necessary to ensure that the model is not affected by highly correlated predictors, which could reduce interpretability and  stability of model.
+
+## Cluster analysis
+```{r ClustterAnalysis, message=FALSE, warning=FALSE, echo=FALSE}
+
+cluster_data <- as.data.frame(
+  sapply(df_imputed[, mutation_cols],
+         function(x) as.integer(x == "MUTATED"))
+)
+
+set.seed(123)
+
+wss <- sapply(1:8, function(k) {
+  kmeans(cluster_data, centers = k, nstart = 20)$tot.withinss
+})
+
+wss_df <- data.frame(k = 1:8, WSS = round(wss, 2))
+wss_df
+
+set.seed(123)
+km2 <- kmeans(cluster_data, centers = 2, nstart = 20)
+
+# Cluster sizes
+km2$size
+
+# Cluster centers (mutation rates per cluster)
+round(km2$centers, 3)
+
+cluster_grade_tab <- table(Cluster = km2$cluster,
+                            Grade   = df_imputed$Grade)
+cluster_grade_tab
+
+# Alignment percentage
+alignment <- round((max(cluster_grade_tab[1,]) +
+                    max(cluster_grade_tab[2,])) /
+                    sum(cluster_grade_tab) * 100, 1)
+alignment
+
+df_imputed$Cluster <- factor(km2$cluster)
+
+# Verify it was added
+levels(df_imputed$Cluster)
+table(df_imputed$Cluster)
+
+```
+
+I performed K-Means clustering on the mutation data (converted into binary format) to identify natural groupings of samples based on gene mutation patterns. This was done to explore whether mutation profiles can separate the data into meaningful clusters without using the target variable. The elbow method showed a gradual decrease in WSS, and I selected k = 2 for simplicity and interpretability. The clustering resulted in two nearly equal-sized groups (`r km2$size[1]` and `r km2$size[2]`). The cluster centers indicate distinct mutation patterns, where one cluster is characterized by high IDH1, TP53, and ATRX mutation rates, while the other shows higher PTEN and EGFR mutation presence. When compared with the actual tumor grades, the clusters align well, achieving an alignment of `r alignment`%, indicating strong separation between GBM and LGG based on mutation profiles. This is necessary to validate that the features capture meaningful biological structure and support their usefulness in classification modeling.
+
+## PCA
+```{r PCA, message=FALSE, warning=FALSE, echo=FALSE}
+
+pca_out    <- prcomp(cluster_data, scale. = TRUE)
+var_exp    <- pca_out$sdev^2 / sum(pca_out$sdev^2)
+cum_var    <- cumsum(var_exp)
+
+var_df <- data.frame(
+  PC         = 1:length(var_exp),
+  Variance   = round(var_exp * 100, 2),
+  Cumulative = round(cum_var * 100, 2)
+)
+
+var_df
+
+which(cum_var >= 0.80)[1]
+which(cum_var >= 0.90)[1]
+
+```
+
+I performed Principal Component Analysis (PCA) on the mutation data to reduce dimensionality and understand how variance is distributed across features. This was done to identify the number of components required to capture most of the information in the dataset. The results show that the first few principal components explain a moderate portion of the variance, and approximately `r which(cum_var >= 0.80)[1]` components are required to capture 80% of the variance, while `r which(cum_var >= 0.90)[1]` components are needed to capture 90%. This indicates that the data is spread across multiple dimensions rather than being dominated by a few features. This is necessary to assess dimensionality, reduce redundancy, and understand the complexity of the dataset before modeling.
+
+### Top feature loadings for PC1
+```{r TopFeatures, message=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+
+loadings_df <- data.frame(
+  Feature = rownames(pca_out$rotation),
+  PC1     = round(pca_out$rotation[, 1], 4),
+  PC2     = round(pca_out$rotation[, 2], 4)
+)
+
+loadings_df <- loadings_df[order(abs(loadings_df$PC1), 
+                                  decreasing = TRUE), ]
+loadings_df
+
+```
+
+I examined the PCA loadings to identify which gene mutations contribute most to the principal components, particularly PC1. This was done to understand which features drive the major variation in the dataset. The results show that genes such as IDH1, ATRX, PTEN, EGFR, and TP53 have the highest absolute loadings on PC1, indicating they are the most influential in separating the data. Positive and negative loadings suggest opposite mutation patterns across samples. This is necessary because identifying key contributing features helps in understanding the biological significance of the data and supports feature importance interpretation in downstream modeling.
+
+## Traning the dataset for each model
+
+### Seprating the data for each model
+```{r SepratingTheData, message=FALSE, warning=FALSE, echo=FALSE}
+
+# Dataset for the logistic regression model
+df_log <- df_imputed
+
+# Dataset for the Random forest model
+df_rf <- df_imputed
+
+# Dataset fpr the C50 model
+df_c50 <- df_imputed
+
+dim(df_log)
+dim(df_rf)
+dim(df_c50)
+```
+
+I created separate copies of the imputed dataset for Logistic Regression, Random Forest, and C5.0 so that each model could be trained independently using the same cleaned and prepared data. This was done to maintain a consistent starting point across models while allowing model-specific preprocessing or tuning steps later without affecting the others. The results show that all three datasets contain the same dimensions, with `r dim(df_log)[1]` observations and `r dim(df_log)[2]` variables. This is necessary to ensure a fair comparison between models and to keep the workflow organized and reproducible.
+
+## Data shapping for the logistic regression model
+
+### Encoding
+```{r OneHotEncoding, message=FALSE, warning=FALSE, echo=FALSE}
+
+# one-hot encoding
+data_log_encod <- model.matrix(Grade ~ . - 1, data = df_log)
+
+# convert to data frame
+df_log <- as.data.frame(data_log_encod)
+
+# add target back
+df_log$Grade <- df_imputed$Grade
+
+# Check structure
+str(df_log)
+
+```
+
+I prepared the dataset for Logistic Regression by applying one-hot encoding to convert categorical variables into numeric indicator variables and then added the target variable `Grade` back to the transformed dataset. This was done because Logistic Regression requires numeric input features and cannot directly handle categorical variables in their original form. After encoding, the dataset was expanded to `r nrow(df_log)` observations and `r ncol(df_log)` variables, where each category is represented in a machine-readable format suitable for model training. This is necessary to ensure that the Logistic Regression model can correctly process the data, estimate coefficients for each predictor, and make accurate classifications.
+
+### Normalization check
+```{r Normalization, message=FALSE, warning=FALSE, echo=FALSE}
+
+hist(df_log$Age_years,
+     main  = "Age at Diagnosis — Original",
+     xlab  = "Age (years)",
+     col   = "orange",
+     breaks = 30)
+
+# Shapiro wilk test to check the distribution
+shapiro.test(df_log$Age_years)
+
+
+```
+
+I examined the distribution of the `Age_years` variable using a histogram and performed the Shapiro-Wilk test to assess normality. This was done to determine whether transformation is required before modeling. The histogram shows a reasonably symmetric distribution, and although the Shapiro-Wilk test gives a significant p-value (`r format(shapiro.test(df_log$Age_years)$p.value, scientific = TRUE)`), this is expected due to the large sample size, where even small deviations from normality become statistically significant. Therefore, I chose not to apply any transformation as the data is visually well distributed. Additionally, transformation is mainly important for models like Logistic Regression that assume linear relationships, while tree-based models such as Random Forest and C5.0 do not require normalization or distributional assumptions. This is necessary to avoid unnecessary preprocessing while ensuring model assumptions are appropriately considered.
+
+### Spliting the data train/test
+```{r SplitingRF, message=FALSE, warning=FALSE, echo=FALSE}
+
+set.seed(123)
+
+train_index_log <- createDataPartition(df_log$Grade, p = 0.8, list = FALSE)
+
+train_log <- df_log[train_index_log, ]
+valid_log <- df_log[-train_index_log, ]
+
+dim(train_log)
+dim(valid_log)
+```
+
+I split the dataset into training and validation sets using an 80:20 ratio while maintaining the class distribution of the target variable. This was done to train the model on one portion of the data and evaluate its performance on unseen data. The training set contains `r dim(train_log)[1]` observations and the validation set contains `r dim(valid_log)[1]` observations, with both having `r dim(train_log)[2]` features. This is necessary to assess the model’s generalization ability and ensure that it performs well on new, unseen data rather than just memorizing the training data.
+
+
+### Scaling the data
+```{r Scaling, message=FALSE, warning=FALSE, echo=FALSE}
+
+num_cols <- setdiff(names(train_log), "Grade")
+
+train_means <- sapply(train_log[, num_cols], mean)
+train_sds   <- sapply(train_log[, num_cols], sd)
+
+train_log[, num_cols] <- scale(train_log[, num_cols], center = train_means, scale = train_sds)
+valid_log[, num_cols]  <- scale(valid_log[, num_cols], center = train_means, scale = train_sds)
+```
+
+I standardized the numerical features in the dataset by centering and scaling them using the mean and standard deviation calculated from the training data. This was done to ensure that all features are on a similar scale, which is important for models like Logistic Regression that are sensitive to feature magnitude. The same scaling parameters from the training set were applied to the validation set to prevent data leakage. This is necessary to improve model convergence, ensure fair contribution of all features, and maintain consistency between training and validation data. Additionally, scaling is not required for tree-based models like Random Forest and C5.0, as they are not affected by feature scale.
+
+### Checking the multicolinearity using vif
+```{r multicolinearity, message=FALSE, warning=FALSE, echo=FALSE}
+
+cols_for_vif <- setdiff(num_cols, c("GenderMale", "Racewhite"))
+
+vif_model <- lm(as.numeric(Grade == "GBM") ~ .,
+                data = train_log[, c(cols_for_vif, "Grade")])
+
+vif_values <- vif(vif_model)
+
+vif_df <- data.frame(
+  Feature = names(vif_values),
+  VIF     = round(vif_values, 3)
+)
+
+vif_df <- vif_df[order(vif_df$VIF, decreasing = TRUE), ]
+vif_df
+
+# high VIF feature is flagged
+high_vif <- vif_df[vif_df$VIF > 5, ]
+high_vif
+
+```
+
+I checked for multicollinearity among the features using Variance Inflation Factor (VIF) to identify highly correlated predictors. This was done because high multicollinearity can negatively affect models like Logistic Regression by making coefficient estimates unstable. The results show that features such as `r high_vif$Feature[1]` and `r high_vif$Feature[2]` have high VIF values (`r high_vif$VIF[1]` and `r high_vif$VIF[2]`), indicating strong multicollinearity. Despite this, I chose not to remove them at this stage because they may carry important predictive information and tree-based models are not affected by multicollinearity. This is necessary to understand feature relationships and make informed decisions about feature selection while balancing model performance and interpretability.
+
+## Data traning for Random forest model
+
+### Spliting the data train/test Random Forest
+```{r SplitingLog, message=FALSE, warning=FALSE, echo=FALSE}
+
+set.seed(123)
+
+train_index_rf <- createDataPartition(df_rf$Grade, p = 0.8, list = FALSE)
+
+train_rf <- df_rf[train_index_rf, ]
+valid_rf <- df_rf[-train_index_rf, ]
+
+```
+
+I split the dataset into training and validation sets for the Random Forest model using an 80:20 ratio while preserving the class distribution. This was done to train the model on one portion of the data and evaluate its performance on unseen data. The training set contains `r nrow(train_rf)` observations and the validation set contains `r nrow(valid_rf)` observations. This is necessary to ensure that the model generalizes well and does not overfit the training data.
+
+## Data traning for C50 model
+
+### Spliting the data train/test C50
+```{r SplittingC50, message=FALSE, warning=FALSE, echo=FALSE}
+
+set.seed(123)
+
+train_index_rf <- createDataPartition(df_c50$Grade, p = 0.8, list = FALSE)
+
+train_c50 <- df_c50[train_index_rf, ]
+valid_c50 <- df_c50[-train_index_rf, ]
+
+dim(train_c50)
+dim(valid_c50)
+
+```
+
+I split the dataset into training and validation sets for the C5.0 model using an 80:20 ratio while maintaining the class distribution of the target variable. This was done to ensure that the model is trained on one portion of the data and evaluated on unseen data for fair performance assessment. The training set contains `r nrow(train_c50)` observations and the validation set contains `r nrow(valid_c50)` observations, with `r ncol(train_c50)` features. This is necessary to evaluate the model’s ability to generalize and prevent overfitting.
+
+## Training the models
+
+## Logistic Regression model
+```{r logModel, message=FALSE, warning=FALSE, echo=FALSE}
+
+set.seed(123)
+
+n_sub <- floor(0.8 * nrow(train_log))
+
+index1 <- sample(1:nrow(train_log), n_sub)
+index2 <- sample(1:nrow(train_log), n_sub)
+index3 <- sample(1:nrow(train_log), n_sub)
+index4 <- sample(1:nrow(train_log), n_sub)
+index5 <- sample(1:nrow(train_log), n_sub)
+
+log_train1 <- train_log[index1, ]
+log_train2 <- train_log[index2, ]
+log_train3 <- train_log[index3, ]
+log_train4 <- train_log[index4, ]
+log_train5 <- train_log[index5, ]
+
+log_w1 <- ifelse(log_train1$Grade == "GBM", 3, 1)
+log_w2 <- ifelse(log_train2$Grade == "GBM", 3, 1)
+log_w3 <- ifelse(log_train3$Grade == "GBM", 3, 1)
+log_w4 <- ifelse(log_train4$Grade == "GBM", 3, 1)
+log_w5 <- ifelse(log_train5$Grade == "GBM", 3, 1)
+
+
+log_model1 <- glm(Grade ~ ., data = log_train1, family = binomial, weights = log_w1)
+log_model2 <- glm(Grade ~ ., data = log_train2, family = binomial, weights = log_w2)
+log_model3 <- glm(Grade ~ ., data = log_train3, family = binomial, weights = log_w3)
+log_model4 <- glm(Grade ~ ., data = log_train4, family = binomial, weights = log_w4)
+log_model5 <- glm(Grade ~ ., data = log_train5, family = binomial, weights = log_w5)
+
+# Predictions
+log_prob1 <- predict(log_model1, newdata = valid_log, type = "response")
+log_prob2 <- predict(log_model2, newdata = valid_log, type = "response")
+log_prob3 <- predict(log_model3, newdata = valid_log, type = "response")
+log_prob4 <- predict(log_model4, newdata = valid_log, type = "response")
+log_prob5 <- predict(log_model5, newdata = valid_log, type = "response")
+
+
+# Ensemble
+logistic_prob <- (log_prob1 + log_prob2 + log_prob3 + log_prob4 + log_prob5) / 5
+
+summary(log_model1)
+summary(log_model2)
+summary(log_model3)
+summary(log_model4)
+summary(log_model5)
+
+
+```
+
+I trained an ensemble of five Logistic Regression models by repeatedly sampling different subsets from the training data and assigning higher class weights to the GBM cases to reduce the effect of class imbalance. This was done to improve model stability, reduce variance from a single training split, and make the model more sensitive to the minority class. The predicted probabilities from all five models were then averaged to obtain a final ensemble probability for validation. The model summaries show that variables such as TP53, IDH2, Age_years, and Cluster2 were repeatedly important across multiple models, while a few coefficients were not estimated because of singularities caused by redundant encoded categories. Overall, the residual deviance was much lower than the null deviance across models, indicating that the fitted models explained the target better than the intercept-only model. This is necessary because Logistic Regression serves as an interpretable baseline model, and using an ensemble with class weighting improves robustness and classification performance on imbalanced data.
+
+### Tuning the threshold
+```{r Tuning, message=FALSE, warning=FALSE, echo=FALSE}
+
+thresholds <- seq(0.1, 0.9, by = 0.05)
+f1_scores <- c()
+
+for(t in thresholds){
+  
+  pred <- ifelse(logistic_prob > t, "LGG", "GBM")
+  pred <- factor(pred, levels = levels(valid_log$Grade))
+  
+  cm <- confusionMatrix(pred, valid_log$Grade)
+  
+  precision <- cm$byClass["Pos Pred Value"]
+  recall <- cm$byClass["Sensitivity"]
+  
+  f1 <- (2 * precision * recall) / (precision + recall)
+  
+  f1_scores <- c(f1_scores, f1)
+}
+
+results <- data.frame(thresholds, f1_scores)
+
+best <- results[which.max(results$f1_scores), ]
+
+results
+best
+```
+
+I tuned the classification threshold for the Logistic Regression ensemble by evaluating F1-scores across multiple probability cutoffs ranging from 0.10 to 0.90. This was done because the default threshold (0.5) may not be optimal, especially in the presence of class imbalance. The results show that the best F1-score of `r round(best$f1_scores, 3)` was achieved at a threshold of `r best$thresholds`, indicating an optimal balance between precision and recall. This is necessary because optimizing the threshold improves classification performance and ensures that the model makes better predictions for both classes rather than relying on a fixed default cutoff.
+
+### Final Prediction
+```{r FinalPrediction, message=FALSE, warning=FALSE, echo=FALSE}
+
+best_t <- best$thresholds
+
+final_pred <- ifelse(logistic_prob > best_t, "LGG", "GBM")
+final_pred <- factor(final_pred, levels = levels(valid_log$Grade))
+
+confusionMatrix(final_pred, valid_log$Grade, positive = "GBM")
+
+```
+
+I generated the final predictions using the optimal threshold (`r best_t`) and evaluated the model performance on the validation dataset using a confusion matrix. This was done to assess how well the model generalizes to unseen data. The results show an accuracy of `r round(confusionMatrix(final_pred, valid_log$Grade)$overall["Accuracy"], 3)` with a strong balance between sensitivity (`r round(confusionMatrix(final_pred, valid_log$Grade)$byClass["Sensitivity"], 3)`) and specificity (`r round(confusionMatrix(final_pred, valid_log$Grade)$byClass["Specificity"], 3)`). The F1-score optimization helped achieve a balanced performance, especially in correctly identifying the GBM class. This is necessary to validate the effectiveness of the model and ensure it performs reliably in predicting tumor grades.
+
+## Traning random forest model
+
+### tuning the mtry
+```{r mtryTuning, message=FALSE, warning=FALSE, echo=FALSE}
+
+mtry_values <- c(2, 4, 6, 8, 10, 12)
+
+results_rf <- data.frame(
+  mtry = integer(),
+  Accuracy = numeric(),
+  F1 = numeric()
+)
+
+for(m in mtry_values){
+  
+  rf_model <- randomForest(
+    Grade ~ .,
+    data = train_rf,
+    ntree = 300,
+    mtry = m
+  )
+  
+  rf_pred <- predict(rf_model, newdata = valid_rf)
+  
+  cm <- confusionMatrix(rf_pred, valid_rf$Grade, positive = "GBM")
+  
+  accuracy <- cm$overall["Accuracy"]
+  precision <- cm$byClass["Pos Pred Value"]
+  recall <- cm$byClass["Sensitivity"]
+  f1 <- (2 * precision * recall) / (precision + recall)
+  
+  results_rf <- rbind(
+    results_rf,
+    data.frame(
+      mtry = m,
+      Accuracy = accuracy,
+      F1 = f1
+    )
+  )
+}
+
+results_rf
+
+best_mtry <- results_rf$mtry[which.max(results_rf$F1)]
+best_mtry
+```
+
+I tuned the `mtry` parameter of the Random Forest model by evaluating different values to identify the optimal number of features considered at each split. This was done to improve model performance, as `mtry` controls the diversity and strength of individual trees in the ensemble. The results show that the best performance was achieved at mtry = `r best_mtry`, with an F1-score of `r round(max(results_rf$F1), 3)` and strong accuracy, indicating a good balance between precision and recall. This is necessary because tuning `mtry` helps optimize the model by reducing overfitting and improving generalization performance on unseen data.
+
+### Traning the Random forest model
+```{r RFModel, message=FALSE, warning=FALSE, echo=FALSE}
+
+rf_best <- randomForest(
+  Grade ~ .,
+  data = train_rf,
+  ntree = 300,
+  mtry = best_mtry
+)
+
+rf_pred <- predict(rf_best, newdata = valid_rf)
+
+rf_prob <- predict(rf_best, newdata = valid_rf, type = "prob")[, "GBM"]
+summary(rf_prob)
+
+```
+
+I trained the final Random Forest model using the optimal `mtry` value and generated both class predictions and predicted probabilities on the validation dataset. This was done to evaluate the model’s performance and understand its confidence in predictions. The predicted probabilities for the GBM class range from `r round(min(rf_prob), 3)` to `r round(max(rf_prob), 3)`, with a median of `r round(median(rf_prob), 3)` and mean of `r round(mean(rf_prob), 3)`, indicating that the model produces well-distributed probability estimates. This is necessary to assess not only classification performance but also the confidence of the model, which is useful for threshold tuning and further ensemble modeling.
+
+### Threshold Tuning Random forest
+```{r ThresholdTuningRF , message=FALSE, warning=FALSE, echo=FALSE}
+
+thresholds_rf <- seq(0.1, 0.9, by = 0.05)
+f1_scores_rf <- c()
+
+for(t in thresholds_rf){
+  
+  rf_pred_thresh <- ifelse(rf_prob > t, "GBM", "LGG")
+  rf_pred_thresh <- factor(rf_pred_thresh, levels = c("GBM", "LGG"))
+  
+  cm_rf <- confusionMatrix(rf_pred_thresh, valid_rf$Grade, positive = "GBM")
+  
+  precision_rf <- cm_rf$byClass["Pos Pred Value"]
+  recall_rf <- cm_rf$byClass["Sensitivity"]
+  
+  f1_rf <- (2 * precision_rf * recall_rf) / (precision_rf + recall_rf)
+  
+  f1_scores_rf <- c(f1_scores_rf, f1_rf)
+}
+
+results_rf_thresh <- data.frame(
+  thresholds = thresholds_rf,
+  f1_scores = f1_scores_rf
+)
+
+results_rf_thresh
+
+best_rf <- results_rf_thresh[which.max(results_rf_thresh$f1_scores), ]
+best_rf
+```
+
+I tuned the classification threshold for the Random Forest model by testing probability cutoffs from 0.10 to 0.90 and calculating the F1-score at each value. This was done because the default threshold of 0.50 does not always provide the best balance between precision and recall, especially for imbalanced classification problems. The results show that the best F1-score was achieved at a threshold of `r best_rf$thresholds`, with an F1-score of `r round(best_rf$f1_scores, 3)`, indicating that this cutoff gives the strongest overall classification performance for the GBM class. This is necessary because threshold tuning helps improve model decision-making and ensures the final predictions are optimized based on the evaluation metric most relevant to the problem.
+
+### Final Random Forest prediction using best threshold
+```{r bestThresholdModel, message=FALSE, warning=FALSE, echo=FALSE}
+
+best_t_rf <- best_rf$thresholds
+
+rf_final_pred <- ifelse(rf_prob > best_t_rf, "GBM", "LGG")
+rf_final_pred <- factor(rf_final_pred, levels = c("GBM", "LGG"))
+
+confusionMatrix(rf_final_pred, valid_rf$Grade, positive = "GBM")
+
+```
+
+I generated the final predictions for the Random Forest model using the optimal threshold (`r best_t_rf`) and evaluated its performance on the validation dataset using a confusion matrix. This was done to assess how well the tuned model performs on unseen data. The results show an accuracy of `r round(confusionMatrix(rf_final_pred, valid_rf$Grade)$overall["Accuracy"], 3)` with strong sensitivity (`r round(confusionMatrix(rf_final_pred, valid_rf$Grade)$byClass["Sensitivity"], 3)`) and specificity (`r round(confusionMatrix(rf_final_pred, valid_rf$Grade)$byClass["Specificity"], 3)`), indicating a good balance in identifying both GBM and LGG classes. The model also achieves a high balanced accuracy, confirming consistent performance across classes. This is necessary to validate the effectiveness of the Random Forest model and ensure it generalizes well for tumor classification.
+
+## C50 Model traning
+
+### Tuning the c50 boosting trials
+```{r BoostingTuning, message=FALSE, warning=FALSE, echo=FALSE}
+
+trials_values <- c(1, 5, 10, 20, 30)
+results_c50   <- data.frame(trials=integer(), Accuracy=numeric(), F1=numeric())
+
+for (t in trials_values) {
+  m    <- C5.0(Grade ~ ., data = train_c50, trials = t)
+  pred <- factor(predict(m, newdata = valid_c50), levels = c("LGG", "GBM"))
+  cm   <- confusionMatrix(pred, valid_c50$Grade, positive = "GBM")
+  prec <- cm$byClass["Pos Pred Value"]
+  rec  <- cm$byClass["Sensitivity"]
+  f1   <- (2 * prec * rec) / (prec + rec)
+  results_c50 <- rbind(results_c50,
+    data.frame(trials   = t,
+               Accuracy = round(cm$overall["Accuracy"], 4),
+               F1       = round(f1, 4)))
+}
+
+results_c50
+best_trials <- results_c50$trials[which.max(results_c50$F1)]
+best_trials
+
+```
+
+I tuned the boosting parameter (`trials`) of the C5.0 model by evaluating multiple values to determine the optimal number of boosting iterations. This was done to improve model performance, as boosting helps combine multiple weak learners to form a stronger model. The results show that the best performance was achieved at trials = `r best_trials`, with the highest F1-score of `r round(max(results_c50$F1), 3)` and strong accuracy. Increasing trials beyond this point did not improve performance and even led to slight degradation, indicating potential overfitting. This is necessary because tuning the boosting parameter helps find the right balance between model complexity and generalization performance.
+
+### Training C5.0 bagging model
+```{r C5.0Model, message=FALSE, warning=FALSE, echo=FALSE}
+
+set.seed(123)
+
+n_sub_c50 <- floor(0.8 * nrow(train_c50))
+
+c50_model1 <- C5.0(Grade ~ ., data = train_c50[sample(nrow(train_c50), n_sub_c50, replace=TRUE), ], trials = best_trials)
+
+c50_model2 <- C5.0(Grade ~ ., data = train_c50[sample(nrow(train_c50), n_sub_c50, replace=TRUE), ], trials = best_trials)
+
+c50_model3 <- C5.0(Grade ~ ., data = train_c50[sample(nrow(train_c50), n_sub_c50, replace=TRUE), ], trials = best_trials)
+
+c50_model4 <- C5.0(Grade ~ ., data = train_c50[sample(nrow(train_c50), n_sub_c50, replace=TRUE), ], trials = best_trials)
+
+c50_model5 <- C5.0(Grade ~ ., data = train_c50[sample(nrow(train_c50), n_sub_c50, replace=TRUE), ], trials = best_trials)
+```
+
+I trained an ensemble of five C5.0 models by creating bootstrap samples (sampling with replacement) from the training dataset and using the optimal number of boosting trials for each model. This was done to improve model stability and reduce variance by combining multiple models trained on slightly different data. Each model learns different patterns, and combining them helps achieve more robust predictions. This is necessary because ensemble methods enhance generalization performance and reduce the risk of overfitting compared to relying on a single model.
+
+### Probability of the model
+```{r Prob, message=FALSE, warning=FALSE, echo=FALSE}
+
+c50_prob1 <- predict(c50_model1, newdata = valid_c50, type = "prob")[, "GBM"]
+c50_prob2 <- predict(c50_model2, newdata = valid_c50, type = "prob")[, "GBM"]
+c50_prob3 <- predict(c50_model3, newdata = valid_c50, type = "prob")[, "GBM"]
+c50_prob4 <- predict(c50_model4, newdata = valid_c50, type = "prob")[, "GBM"]
+c50_prob5 <- predict(c50_model5, newdata = valid_c50, type = "prob")[, "GBM"]
+
+c50_prob <- (c50_prob1 + c50_prob2 + c50_prob3 + c50_prob4 + c50_prob5) / 5
+summary(c50_prob)
+
+```
+
+I generated predicted probabilities for the GBM class from each of the five C5.0 models and averaged them to obtain a final ensemble probability. This was done to combine the strengths of multiple models and produce more stable and reliable predictions. The resulting probabilities range from `r round(min(c50_prob), 3)` to `r round(max(c50_prob), 3)`, with a median of `r round(median(c50_prob), 3)` and mean of `r round(mean(c50_prob), 3)`, indicating a well-distributed set of prediction confidences. This is necessary because probability outputs allow for threshold tuning and better decision-making compared to direct class predictions.
+
+### Threshold tuning of the c5.0 model
+```{r tunningc50, message=FALSE, warning=FALSE, echo=FALSE}
+
+thresholds_c50 <- seq(0.1, 0.9, by = 0.05)
+f1_scores_c50  <- c()
+
+for (th in thresholds_c50) {
+  pred <- factor(ifelse(c50_prob > th, "GBM", "LGG"), levels = c("LGG", "GBM"))
+  cm   <- confusionMatrix(pred, valid_c50$Grade, positive = "GBM")
+  prec <- cm$byClass["Pos Pred Value"]
+  rec  <- cm$byClass["Sensitivity"]
+  f1   <- (2 * prec * rec) / (prec + rec)
+  f1_scores_c50 <- c(f1_scores_c50, f1)
+}
+
+results_c50_threshold <- data.frame(Threshold = thresholds_c50, F1 = f1_scores_c50)
+best_c50           <- results_c50_threshold[which.max(results_c50_threshold$F1), ]
+
+results_c50_threshold
+best_c50
+
+```
+
+I tuned the classification threshold for the C5.0 ensemble model by evaluating F1-scores across probability cutoffs ranging from 0.10 to 0.90. This was done to find the optimal threshold that balances precision and recall, as the default threshold may not yield the best performance. The results show that the best F1-score of `r round(best_c50$F1, 3)` was achieved at a threshold of `r best_c50$Threshold`, indicating the most effective decision boundary for classifying GBM cases. This is necessary because threshold tuning improves model performance and ensures better handling of class imbalance by optimizing prediction decisions.
+
+### Final prediction of the C5.0 model
+```{r FinalC50, message=FALSE, warning=FALSE, echo=FALSE}
+
+best_t_c50     <- best_c50$Threshold
+c50_final_pred <- factor(ifelse(c50_prob > best_t_c50, "GBM", "LGG"),
+                          levels = c("LGG", "GBM"))
+
+confusionMatrix(c50_final_pred, valid_c50$Grade, positive = "GBM")
+
+```
+
+I generated the final predictions for the C5.0 ensemble model using the optimal threshold (`r best_t_c50`) and evaluated its performance on the validation dataset using a confusion matrix. This was done to assess how well the model generalizes to unseen data. The results show an accuracy of `r round(confusionMatrix(c50_final_pred, valid_c50$Grade)$overall["Accuracy"], 3)` with strong sensitivity (`r round(confusionMatrix(c50_final_pred, valid_c50$Grade)$byClass["Sensitivity"], 3)`) and specificity (`r round(confusionMatrix(c50_final_pred, valid_c50$Grade)$byClass["Specificity"], 3)`), indicating a well-balanced performance in identifying both GBM and LGG classes. The model also achieves high balanced accuracy, confirming consistent classification across classes. This is necessary to validate the effectiveness of the C5.0 model and ensure it performs reliably for tumor grade prediction.
+
+## Heterogenous Ensemble 
+
+### Combining all three model (Ensemble Function)
+```{r Ensemble, message=FALSE, warning=FALSE, echo=FALSE}
+
+ensemble_prob <- (logistic_prob + rf_prob + c50_prob) / 3
+
+summary(ensemble_prob)
+
+```
+
+I combined the predicted probabilities from all three models—Logistic Regression, Random Forest, and C5.0—by taking their average to create a heterogeneous ensemble model. This was done to leverage the strengths of each individual model, as different algorithms capture different patterns in the data. The resulting ensemble probabilities show a well-distributed range, indicating that the model is effectively capturing variation in prediction confidence. This step is necessary because ensemble models generally improve overall performance, reduce model-specific bias, and provide more robust and stable predictions compared to individual models.
+
+### Threshold Tuning for Ensemble
+```{r EnsembleThresholdTuning, message=FALSE, warning=FALSE, echo=FALSE}
+thresholds_ens <- seq(0.1, 0.9, by = 0.05)
+f1_scores_ens  <- c()
+
+for (th in thresholds_ens) {
+  pred <- factor(ifelse(ensemble_prob > th, "GBM", "LGG"),
+                 levels = c("LGG", "GBM"))
+  cm   <- confusionMatrix(pred, valid_rf$Grade, positive = "GBM")
+  prec <- cm$byClass["Pos Pred Value"]
+  rec  <- cm$byClass["Sensitivity"]
+  f1   <- ifelse(is.na(prec) | is.na(rec) | (prec + rec) == 0, 0,
+                 2 * prec * rec / (prec + rec))
+  f1_scores_ens <- c(f1_scores_ens, f1)
+}
+
+results_ens_threshold <- data.frame(Threshold = thresholds_ens, F1 = f1_scores_ens)
+best_ens              <- results_ens_threshold[which.max(results_ens_threshold$F1), ]
+
+results_ens_threshold
+best_ens
+```
+
+I tuned the classification threshold for the heterogeneous ensemble model by evaluating F1-scores across thresholds from 0.10 to 0.90. This was done to identify the optimal cutoff that balances precision and recall for GBM classification. The results show that the best F1-score of `r round(best_ens$F1, 3)` is achieved at a threshold of `r best_ens$Threshold`, indicating the most effective decision boundary for the ensemble predictions. However, compared to individual models, the ensemble shows lower performance, suggesting that simple averaging may dilute strong signals from better-performing models. This step is necessary to ensure fair evaluation and to confirm whether combining models actually improves performance.
+
+### Final ensamble probability
+```{r finalEnsemble, message=FALSE, warning=FALSE, echo=FALSE}
+
+best_t_ens     <- best_ens$Threshold
+ens_final_pred <- factor(ifelse(ensemble_prob > best_t_ens, "GBM", "LGG"),
+                          levels = c("LGG", "GBM"))
+
+confusionMatrix(ens_final_pred, valid_rf$Grade, positive = "GBM")
+
+```
+
+I generated the final predictions for the heterogeneous ensemble model using the optimal threshold (`r best_t_ens`) and evaluated its performance on the validation dataset. This was done to assess whether combining all three models improves prediction performance. The results show an accuracy of `r round(confusionMatrix(ens_final_pred, valid_rf$Grade)$overall["Accuracy"], 3)` with good sensitivity (`r round(confusionMatrix(ens_final_pred, valid_rf$Grade)$byClass["Sensitivity"], 3)`) but relatively lower specificity (`r round(confusionMatrix(ens_final_pred, valid_rf$Grade)$byClass["Specificity"], 3)`), indicating that the model is better at identifying GBM than LGG. Compared to individual models, the ensemble shows slightly lower overall performance, suggesting that simple averaging may not be the most effective combination strategy in this case. This step is necessary to validate whether ensemble learning provides improvement and to compare it fairly with individual model performances.
+
+### Ensemble Function
+```{r EnsembleFun, message=FALSE, warning=FALSE, echo=FALSE}
+
+predict_ensemble <- function(lr_p, rf_p, c50_p) {
+  
+  ens_prob <- (lr_p + rf_p + c50_p) / 3
+  
+  ens_pred <- factor(
+    ifelse(ens_prob > best_t_ens, "GBM", "LGG"),
+    levels = c("LGG", "GBM")
+  )
+  
+  return(data.frame(
+    Probability_GBM = round(ens_prob, 4),
+    Prediction      = ens_pred
+  ))
+}
+
+# Call function on validation probabilities
+ensemble_result <- predict_ensemble(logistic_prob, rf_prob, c50_prob)
+ensemble_result
+
+
+```
+
+I created an ensemble prediction function to combine the predicted probabilities from Logistic Regression, Random Forest, and C5.0, calculate the average probability for the GBM class, and convert it into the final class prediction using the optimal ensemble threshold. This was done to make the ensemble process reusable, organized, and easy to apply to any new set of model probabilities. The output provides both the final probability for GBM and the corresponding predicted class for each observation, making the results more interpretable. This is necessary because defining a separate prediction function improves workflow clarity, ensures consistency in ensemble prediction, and allows the final model to be applied efficiently to validation or future unseen data.
+
+## Model Evaluation
+
+### K fold cross validation
+```{r kFold, message=FALSE, warning=FALSE, echo=FALSE}
+
+# trainControl to define the 5 fold CV
+control <- trainControl(
+  method          = "cv",
+  number          = 5,
+  classProbs      = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+
+```
+
+I defined a 5-fold cross-validation strategy to evaluate model performance more reliably by repeatedly splitting the training data into different subsets. This was done to reduce dependence on a single train-validation split and obtain a more stable estimate of how the models perform on unseen data. In this setup, the data is divided into five folds, where four folds are used for training and one fold is used for validation in each iteration, and this process is repeated five times. I also enabled class probabilities, used a summary function suitable for two-class classification, and saved the final predictions from each fold for later evaluation. This is necessary because cross-validation provides a more robust assessment of model generalization, helps detect overfitting, and supports fair comparison across models.
+
+### Logistic regression k fold
+```{r logKFold, message=FALSE, warning=FALSE, echo=FALSE}
+
+set.seed(123)
+
+cv_lr <- train(
+  Grade ~ .,
+  data      = train_log,
+  method    = "glm",
+  family    = "binomial",
+  trControl = control,
+  metric    = "ROC"
+)
+
+cv_lr$results
+
+```
+
+I evaluated the Logistic Regression model using 5-fold cross-validation on the training data. This was done to obtain a more reliable estimate of model performance by assessing it across multiple validation folds rather than relying on a single split. The cross-validation results show an average ROC of `r round(cv_lr$results$ROC[1], 3)`, sensitivity of `r round(cv_lr$results$Sens[1], 3)`, and specificity of `r round(cv_lr$results$Spec[1], 3)`, indicating strong overall discrimination and balanced classification performance. The relatively small standard deviations across folds suggest that the model performs consistently. This is necessary because cross-validation provides a robust measure of generalization performance and helps confirm that the Logistic Regression model is stable and not overly dependent on one particular training split.
+
+### Random forest K fold
+```{r RFKfold, message=FALSE, warning=FALSE, echo=FALSE}
+
+set.seed(123)
+
+cv_rf <- train(
+  Grade ~ .,
+  data      = train_rf,
+  method    = "rf",
+  trControl = control,
+  tuneGrid  = expand.grid(mtry = best_mtry),
+  metric    = "ROC",
+  ntree     = 300
+)
+
+cv_rf$results
+```
+
+I evaluated the Random Forest model using 5-fold cross-validation with the optimal `mtry` value (`r best_mtry`) identified during tuning. This was done to ensure that the model’s performance is consistent across different subsets of the training data. The cross-validation results show an average ROC of `r round(cv_rf$results$ROC[1], 3)`, sensitivity of `r round(cv_rf$results$Sens[1], 3)`, and specificity of `r round(cv_rf$results$Spec[1], 3)`, indicating strong classification performance with a good balance between detecting GBM and LGG cases. The relatively low standard deviations suggest stable model behavior across folds. This is necessary because cross-validation confirms that the Random Forest model generalizes well and is not overfitting to a specific training split.
+
+### C5.0 k FOld
+```{r C50Kfold, message=FALSE, warning=FALSE, echo=FALSE}
+
+set.seed(123)
+
+cv_c50 <- train(
+  Grade ~ .,
+  data     = train_c50,
+  method   = "C5.0",
+  trControl = control,
+  tuneGrid  = expand.grid(
+    trials = best_trials,
+    model  = "tree",
+    winnow = FALSE
+  ),
+  metric = "ROC"
+)
+
+cv_c50$results
+
+```
+
+I evaluated the C5.0 model using 5-fold cross-validation with the optimal number of boosting trials (`r best_trials`). This was done to assess the model’s consistency and generalization across different subsets of the training data. The results show an average ROC of `r round(cv_c50$results$ROC[1], 3)`, sensitivity of `r round(cv_c50$results$Sens[1], 3)`, and specificity of `r round(cv_c50$results$Spec[1], 3)`, indicating strong predictive performance with a good balance between correctly identifying GBM and LGG cases. The low variation across folds suggests stable model behavior. This is necessary because cross-validation ensures that the C5.0 model is robust, reliable, and not overfitting to a particular subset of the data.
+
+### Summary of the K fold result across all model
+```{r SummaryKfold, message=FALSE, warning=FALSE, echo=FALSE}
+
+cv_summary <- data.frame(
+  Model    = c("Logistic Regression", "Random Forest", "C5.0"),
+  CV_ROC   = round(c(
+    mean(cv_lr$resample$ROC),
+    mean(cv_rf$resample$ROC),
+    mean(cv_c50$resample$ROC)
+  ), 4),
+  CV_Sens  = round(c(
+    mean(cv_lr$resample$Sens),
+    mean(cv_rf$resample$Sens),
+    mean(cv_c50$resample$Sens)
+  ), 4),
+  CV_Spec  = round(c(
+    mean(cv_lr$resample$Spec),
+    mean(cv_rf$resample$Spec),
+    mean(cv_c50$resample$Spec)
+  ), 4)
+)
+
+cv_summary
+
+```
+
+I summarized the 5-fold cross-validation results for all three models—Logistic Regression, Random Forest, and C5.0—to compare their overall performance. This was done to identify which model generalizes best based on ROC, sensitivity, and specificity. The results show that all three models perform similarly, with C5.0 achieving the highest ROC (`r cv_summary$CV_ROC[3]`), indicating slightly better discrimination ability. Logistic Regression shows the highest sensitivity (`r cv_summary$CV_Sens[1]`), meaning it is better at identifying GBM cases, while C5.0 provides a better balance between sensitivity and specificity. This comparison is necessary to select the most suitable model and understand the trade-offs between different approaches before finalizing the predictive model.
+
+
+### Comparision of model
+
+```{r Evaluation, message=FALSE, warning=FALSE, echo=FALSE}
+
+model_comparison <- data.frame(
+  Model = c("Logistic Regression", "Random Forest",
+            "C5.0 Decision Tree", "Heterogeneous Ensemble"),
+  
+  Accuracy = c(
+    confusionMatrix(final_pred,     valid_log$Grade, positive="GBM")$overall["Accuracy"],
+    confusionMatrix(rf_final_pred,  valid_rf$Grade,  positive="GBM")$overall["Accuracy"],
+    confusionMatrix(c50_final_pred, valid_c50$Grade, positive="GBM")$overall["Accuracy"],
+    confusionMatrix(ens_final_pred, valid_rf$Grade,  positive="GBM")$overall["Accuracy"]
+  ),
+  
+  Sensitivity = c(
+    confusionMatrix(final_pred, valid_log$Grade, positive="GBM")$byClass["Sensitivity"],
+    confusionMatrix(rf_final_pred,  valid_rf$Grade, positive="GBM")$byClass["Sensitivity"],
+    confusionMatrix(c50_final_pred, valid_c50$Grade, positive="GBM")$byClass["Sensitivity"],
+    confusionMatrix(ens_final_pred, valid_rf$Grade,  positive="GBM")$byClass["Sensitivity"]
+  ),
+  
+  Specificity = c(
+    confusionMatrix(final_pred,     valid_log$Grade, positive="GBM")$byClass["Specificity"],
+    confusionMatrix(rf_final_pred,  valid_rf$Grade,  positive="GBM")$byClass["Specificity"],
+    confusionMatrix(c50_final_pred, valid_c50$Grade, positive="GBM")$byClass["Specificity"],
+    confusionMatrix(ens_final_pred, valid_rf$Grade,  positive="GBM")$byClass["Specificity"]
+  ),
+  
+  Precision = c(
+    confusionMatrix(final_pred,     valid_log$Grade, positive="GBM")$byClass["Pos Pred Value"],
+    confusionMatrix(rf_final_pred,  valid_rf$Grade,  positive="GBM")$byClass["Pos Pred Value"],
+    confusionMatrix(c50_final_pred, valid_c50$Grade, positive="GBM")$byClass["Pos Pred Value"],
+    confusionMatrix(ens_final_pred, valid_rf$Grade,  positive="GBM")$byClass["Pos Pred Value"]
+  ),
+  
+  F1 = c(
+    confusionMatrix(final_pred,     valid_log$Grade, positive="GBM")$byClass["F1"],
+    confusionMatrix(rf_final_pred,  valid_rf$Grade,  positive="GBM")$byClass["F1"],
+    confusionMatrix(c50_final_pred, valid_c50$Grade, positive="GBM")$byClass["F1"],
+    confusionMatrix(ens_final_pred, valid_rf$Grade,  positive="GBM")$byClass["F1"]
+  ),
+  
+  Kappa = c(
+    confusionMatrix(final_pred,     valid_log$Grade, positive="GBM")$overall["Kappa"],
+    confusionMatrix(rf_final_pred,  valid_rf$Grade,  positive="GBM")$overall["Kappa"],
+    confusionMatrix(c50_final_pred, valid_c50$Grade, positive="GBM")$overall["Kappa"],
+    confusionMatrix(ens_final_pred, valid_rf$Grade,  positive="GBM")$overall["Kappa"]
+  ),
+  
+  row.names = NULL
+)
+
+model_comparison[, -1] <- round(model_comparison[, -1], 4)
+model_comparison
+
+```
+
+I compared the final performance of all models—Logistic Regression, Random Forest, C5.0, and the Heterogeneous Ensemble—using key evaluation metrics such as accuracy, sensitivity, specificity, precision, F1-score, and Kappa. This was done to identify the best-performing model and understand the trade-offs between them. The results show that Logistic Regression, Random Forest, and C5.0 all achieve similar accuracy (`r model_comparison$Accuracy[1]`), with Logistic Regression having slightly higher sensitivity, while Random Forest and C5.0 provide a better balance between sensitivity and specificity. In contrast, the heterogeneous ensemble performs worse across all metrics, indicating that simple averaging did not improve performance in this case. This comparison is necessary to make an informed decision about the final model, and based on the results, Random Forest or C5.0 can be considered more robust choices due to their balanced performance.
+
