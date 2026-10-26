@@ -31,6 +31,37 @@ A key motivation for this analysis is to compare different machine learning stra
 9. Compare model performance using accuracy, sensitivity, specificity, F1-score, Kappa, and balanced accuracy.
 10. Identify the most robust model for GBM/LGG classification.
 
+## Workflow
+```mermaid
+flowchart TD
+    A["TCGA-LGG / TCGA-GBM<br/>862 obs, 27 vars"]
+    B["clean_data.R<br/>drop IDs, encode mutations,<br/>factor clinical vars"]
+    C["glioma_clean.csv<br/>20 mutations + age,<br/>gender, race"]
+    D["EDA<br/>class balance, mutation<br/>frequency, VIF"]
+    E["caret::createDataPartition<br/>stratified on grade"]
+    F["Train set"]
+    G["Test set"]
+    H["Logistic Regression"]
+    I["Random Forest<br/>tuned mtry"]
+    J["C5.0<br/>tuned boosting trials"]
+    K["Threshold tuning<br/>sweep cutoff, maximize F1"]
+    L["Heterogeneous Ensemble<br/>majority vote"]
+    M["Evaluation<br/>Accuracy, Sensitivity, Specificity,<br/>F1, Kappa, Balanced Accuracy"]
+
+    A --> B --> C --> D --> E
+    E --> F
+    E --> G
+    F --> H
+    F --> I
+    F --> J
+    H --> K
+    I --> K
+    J --> K
+    K --> L
+    L --> M
+    G --> M
+```
+
 ## Technologies and Packages
 
 The analysis was conducted in R using packages including:
